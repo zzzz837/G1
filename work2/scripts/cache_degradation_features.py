@@ -75,11 +75,31 @@ def main():
     index_entries = []
     extraction_times = []
 
+    # Resume support: load existing index
+    existing = {}
+    index_path = out_dir / "index.jsonl"
+    if index_path.exists():
+        with open(index_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                e = json.loads(line)
+                key = f"{e['source_path']}_{e['severity']}_{e['seed']}"
+                existing[key] = e
+                index_entries.append(e)
+        total_samples = len(index_entries)
+        print(f"[INFO] Resuming: {total_samples} existing cached samples found")
+
     for src_idx, (src_path, clean_wav) in enumerate(clean_sources):
         split = _assign_split(src_idx, len(clean_sources), args.seed)
 
         for sev_idx, sev in enumerate(severities):
             local_seed = args.seed * 10000 + src_idx * 100 + sev_idx
+            cache_key = f"{src_path}_{sev}_{local_seed}"
+
+            if cache_key in existing:
+                continue
             seed_everything(local_seed)
 
             cfg = sample_degradation_config(sev, local_seed)
@@ -125,7 +145,6 @@ def main():
             total_samples += 1
 
     # Save index
-    index_path = out_dir / "index.jsonl"
     with open(index_path, "w", encoding="utf-8") as f:
         for entry in index_entries:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")

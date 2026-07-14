@@ -152,6 +152,7 @@ def main():
     parser.add_argument("--learning-rate", type=float, default=0.001)
     parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument("--resume", action="store_true", help="Resume from last_model.pt")
     args = parser.parse_args()
 
     seed_everything(args.seed)
@@ -169,24 +170,47 @@ def main():
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
     stats_dim = train_ds.stats_dim
-    model = DegradationEstimator(input_dim=stats_dim).to(device)
+
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    start_epoch = 1
+    best_valid_loss = float("inf")
+    history = []
+
+    if args.resume:
+        ckpt_path = out_dir / "last_model.pt"
+        if ckpt_path.exists():
+            ckpt = torch.load(str(ckpt_path), map_location=device)
+            model = DegradationEstimator(input_dim=ckpt["input_dim"], hidden_dim=ckpt.get("hidden_dim", 32)).to(device)
+            model.load_state_dict(ckpt["model_state_dict"])
+            start_epoch = ckpt.get("epoch", 0) + 1
+            if (out_dir / "history.csv").exists():
+                import csv
+                with open(out_dir / "history.csv", "r") as f:
+                    for row in csv.DictReader(f):
+                        history.append({k: float(v) if v else 0.0 for k, v in row.items()})
+                        history[-1]["epoch"] = int(history[-1]["epoch"])
+                if "valid_loss" in history[-1]:
+                    best_valid_loss = min(h["valid_loss"] for h in history)
+            print(f"[INFO] Resumed from epoch {start_epoch}, best_valid_loss={best_valid_loss:.4f}")
+        else:
+            print("[WARN] --resume specified but no last_model.pt found, starting fresh")
+            model = DegradationEstimator(input_dim=stats_dim).to(device)
+    else:
+        model = DegradationEstimator(input_dim=stats_dim).to(device)
+
     n_params = model.count_trainable_params()
 
     print(f"[INFO] Stats dimension: {stats_dim}")
     print(f"[INFO] Trainable params: {n_params}")
     print(f"[INFO] Dataset: train={len(train_ds)}, valid={len(valid_ds)}, test={len(test_ds)}")
 
-    if n_params >= 10000:
-        print(f"[WARN] Parameter count {n_params} >= 10000; consider reducing")
-
     loss_fn = DegradationEstimatorLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=args.patience // 2, min_lr=1e-6
     )
-
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     config = {
         "input_dim": stats_dim,
@@ -204,12 +228,10 @@ def main():
     with open(out_dir / "train_config.json", "w") as f:
         json.dump(config, f, indent=2)
 
-    history = []
-    best_valid_loss = float("inf")
     patience_counter = 0
     t_start = time.perf_counter()
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         train_metrics = train_epoch(model, train_loader, loss_fn, optimizer, device)
         valid_metrics = eval_epoch(model, valid_loader, loss_fn, device)
 

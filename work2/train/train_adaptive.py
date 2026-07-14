@@ -83,6 +83,7 @@ def main():
     parser.add_argument("--num-samples", type=int, default=256)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--freeze-estimator", action="store_true")
+    parser.add_argument("--resume", action="store_true", help="Resume from last_model.pt")
     args = parser.parse_args()
 
     seed_everything(args.seed)
