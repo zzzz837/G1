@@ -1,0 +1,18 @@
+{
+  "git_commit": "7149bbbdea27dfa95e42a57f5f344e2c29d12c2e",
+  "python_version": "3.13.9",
+  "torch_version": "2.13.0+cpu",
+  "device": "cpu",
+  "sample_rate": 16000,
+  "input_samples": 156302,
+  "input_duration_seconds": 9.7689,
+  "output_samples": 156160,
+  "parameter_count": 48245,
+  "trainable_parameter_count": 23669,
+  "mean_inference_seconds": 0.222378,
+  "rtf": 0.022764,
+  "checkpoint": "model_trained_on_dns3.tar",
+  "checkpoint_sha256": "a630d992cf792daf4ce2bb5bcf9c4d389f740a8f09c6e0971184697fe6371b79",
+  "n_runs": 10,
+  "seed": 2026
+}

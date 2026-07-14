@@ -1,0 +1,17 @@
+{
+  "total_samples": 20,
+  "train": 20,
+  "valid": 0,
+  "test": 0,
+  "severity_counts": {
+    "clean": 5,
+    "light": 5,
+    "medium": 5,
+    "heavy": 5
+  },
+  "stats_dim": 32,
+  "cache_size_mb": 0.06,
+  "mean_extraction_time_s": 0.2437,
+  "seed": 2026,
+  "synthetic": false
+}

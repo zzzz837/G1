@@ -1,0 +1,40 @@
+{
+  "note": "SYNTHETIC DATA ONLY - does not represent real speech performance",
+  "noise_accuracy": 1.0,
+  "noise_f1": 1.0,
+  "bandwidth_accuracy": 0.75,
+  "bandwidth_f1": 0.6337,
+  "bit_accuracy": 0.6,
+  "bit_f1": 0.5465,
+  "snr_mae_db": 7.4479,
+  "by_severity": [
+    {
+      "severity": "clean",
+      "n": 5,
+      "noise_acc": 1.0,
+      "bw_acc": 0.8,
+      "bit_acc": 1.0
+    },
+    {
+      "severity": "light",
+      "n": 5,
+      "noise_acc": 1.0,
+      "bw_acc": 0.2,
+      "bit_acc": 0.0
+    },
+    {
+      "severity": "medium",
+      "n": 5,
+      "noise_acc": 1.0,
+      "bw_acc": 1.0,
+      "bit_acc": 0.4
+    },
+    {
+      "severity": "heavy",
+      "n": 5,
+      "noise_acc": 1.0,
+      "bw_acc": 1.0,
+      "bit_acc": 1.0
+    }
+  ]
+}
