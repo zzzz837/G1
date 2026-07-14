@@ -1,0 +1,69 @@
+VCTK 数据集获取方式
+===================
+
+## 1. 注册 OpenDataLab
+
+访问: https://openxlab.org.cn/
+注册账号 → 登录 → 用户中心 → 获取 AK/SK
+
+## 2. 安装 openxlab
+
+pip install openxlab
+
+## 3. 配置凭证
+
+方式一 (推荐): 创建配置文件
+  文件路径: C:\Users\lenovo\.openxlab\config.json
+  内容:
+  {
+      "ak": "gva34kod0qjeo7yxqewl",
+      "sk": "omjg9q21bzzrypmw4vr0y6edadlk83o0b6xnldja"
+  }
+
+方式二: 交互式登录
+  openxlab login
+  (按提示输入 AK/SK)
+
+## 4. 查看数据集信息
+
+openxlab dataset info --dataset-repo OpenDataLab/VCTK
+
+数据集概况:
+  - 来源: University of Edinburgh (CSTR VCTK Corpus)
+  - 发言人数: 110位英语母语者
+  - 采样率: 48kHz (需重采样到16kHz)
+  - 总大小: 10.4 GB
+  - 文件: raw/VCTK-Corpus.zip
+
+## 5. 下载完整数据集
+
+cd D:\workshop\G1
+
+openxlab dataset download --dataset-repo OpenDataLab/VCTK \
+  --source-path /raw/VCTK-Corpus.zip \
+  --target-path data/vctk
+
+下载到: data/vctk/OpenDataLab___VCTK/raw/VCTK-Corpus.zip
+
+## 6. 解压并重采样
+
+# 解压
+python -c "import zipfile; zipfile.ZipFile('data/vctk/OpenDataLab___VCTK/raw/VCTK-Corpus.zip').extractall('data/vctk_raw')"
+
+# 重采样 48kHz→16kHz
+python work2/scripts/resample_vctk.py \
+  --input-dir data/vctk_raw \
+  --output-dir data/vctk_16k
+
+## 7. 建清单
+
+python -m work2.data.build_manifest \
+  --clean-dir data/vctk_16k \
+  --output outputs/manifest_vctk.jsonl \
+  --seed 2026
+
+## 噪声数据集 (可选)
+
+openxlab dataset info --dataset-repo OpenDataLab/DEMAND
+
+或使用合成噪声 (torch.randn) 先跑流程。
