@@ -1,5 +1,0 @@
-{"path": "data\\vctk_16k\\p226_027.wav", "relative_path": "data\\vctk_16k\\p226_027.wav", "sample_rate": 16000, "channels": 1, "frames": 90167, "duration": 5.6354, "type": "clean", "split": "train"}
-{"path": "data\\vctk_16k\\p226_177.wav", "relative_path": "data\\vctk_16k\\p226_177.wav", "sample_rate": 16000, "channels": 1, "frames": 47161, "duration": 2.9476, "type": "clean", "split": "train"}
-{"path": "data\\vctk_16k\\p226_091.wav", "relative_path": "data\\vctk_16k\\p226_091.wav", "sample_rate": 16000, "channels": 1, "frames": 62874, "duration": 3.9296, "type": "clean", "split": "train"}
-{"path": "data\\vctk_16k\\p226_055.wav", "relative_path": "data\\vctk_16k\\p226_055.wav", "sample_rate": 16000, "channels": 1, "frames": 86027, "duration": 5.3767, "type": "clean", "split": "train"}
-{"path": "data\\vctk_16k\\p226_002.wav", "relative_path": "data\\vctk_16k\\p226_002.wav", "sample_rate": 16000, "channels": 1, "frames": 75803, "duration": 4.7377, "type": "clean", "split": "test"}

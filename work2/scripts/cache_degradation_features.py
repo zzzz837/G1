@@ -28,6 +28,14 @@ from work2.data.label_utils import make_degradation_labels
 from work2.models.frozen_gtcrn_extractor import FrozenGTCRNFeatureExtractor
 
 
+def _get_streaming_noise(n_samples: int, seed: int) -> torch.Tensor:
+    """Generate reproducible noise on-the-fly."""
+    g = torch.Generator()
+    g.manual_seed(seed)
+    noise = torch.randn(n_samples, generator=g, dtype=torch.float32) * 0.1
+    return noise - noise.mean()
+
+
 def collate_batch(batch_stats: list[torch.Tensor]) -> torch.Tensor:
     return torch.stack(batch_stats, dim=0)
 
@@ -58,93 +66,149 @@ def main():
     # Determine mode: real manifest, single wav, or synthetic
     manifest_path = Path(args.clean_manifest)
     use_synthetic = not manifest_path.exists()
-
     if use_synthetic:
         print("[WARN] No clean manifest found. Generating synthetic pseudo-speech.")
         clean_sources = _generate_synthetic_sources(
             num_sources=32, duration=args.segment_seconds, sample_rate=16000, seed=args.seed
         )
-    else:
-        clean_sources = _load_manifest_sources(manifest_path, args.segment_seconds, 16000, args.seed)
+        noise_sources = _load_or_generate_noise(args.noise_manifest, 16000, args.seed, clean_sources)
 
-    noise_sources = _load_or_generate_noise(args.noise_manifest, 16000, args.seed, clean_sources)
+        severities = ["clean", "light", "medium", "heavy"]
 
-    severities = ["clean", "light", "medium", "heavy"]
+        total_samples = 0
+        index_entries = []
+        extraction_times = []
 
-    total_samples = 0
-    index_entries = []
-    extraction_times = []
+        existing = {}
+        index_path = out_dir / "index.jsonl"
+        if index_path.exists():
+            with open(index_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    e = json.loads(line)
+                    key = f"{e['source_path']}_{e['severity']}_{e['seed']}"
+                    existing[key] = e
+                    index_entries.append(e)
+            total_samples = len(index_entries)
+            print(f"[INFO] Resuming: {total_samples} existing cached samples found")
 
-    # Resume support: load existing index
-    existing = {}
-    index_path = out_dir / "index.jsonl"
-    if index_path.exists():
-        with open(index_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
+        for src_idx, (src_path, clean_wav) in enumerate(clean_sources):
+            split = _assign_split(src_idx, len(clean_sources), args.seed)
+            for sev_idx, sev in enumerate(severities):
+                local_seed = args.seed * 10000 + src_idx * 100 + sev_idx
+                cache_key = f"{src_path}_{sev}_{local_seed}"
+                if cache_key in existing:
                     continue
-                e = json.loads(line)
-                key = f"{e['source_path']}_{e['severity']}_{e['seed']}"
-                existing[key] = e
-                index_entries.append(e)
-        total_samples = len(index_entries)
-        print(f"[INFO] Resuming: {total_samples} existing cached samples found")
+                _cache_one_sample(clean_wav.clone(), noise_sources, src_idx, src_path, sev, local_seed, split,
+                                  extractor, out_dir, index_entries, extraction_times)
+                total_samples += 1
 
-    for src_idx, (src_path, clean_wav) in enumerate(clean_sources):
-        split = _assign_split(src_idx, len(clean_sources), args.seed)
+    else:
+        print(f"[INFO] Streaming processing of {manifest_path}")
+        severities = ["clean", "light", "medium", "heavy"]
+        total_samples = 0
+        index_entries = []
+        extraction_times = []
 
-        for sev_idx, sev in enumerate(severities):
-            local_seed = args.seed * 10000 + src_idx * 100 + sev_idx
-            cache_key = f"{src_path}_{sev}_{local_seed}"
+        existing = {}
+        index_path = out_dir / "index.jsonl"
+        if index_path.exists():
+            with open(index_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    e = json.loads(line)
+                    key = f"{e['source_path']}_{e['severity']}_{e['seed']}"
+                    existing[key] = e
+                    index_entries.append(e)
+            total_samples = len(index_entries)
+            print(f"[INFO] Resuming: {total_samples} existing cached samples found")
 
-            if cache_key in existing:
+        with open(manifest_path, "r") as f:
+            manifest_lines = [json.loads(line) for line in f if line.strip()]
+
+        n_sources = len(manifest_lines)
+        for src_idx, entry in enumerate(manifest_lines):
+            audio_path = Path(entry.get("path", entry.get("relative_path", "")))
+            if not audio_path.exists():
                 continue
-            seed_everything(local_seed)
 
-            cfg = sample_degradation_config(sev, local_seed)
-            noise_wav = noise_sources[src_idx % len(noise_sources)] if cfg.add_noise else None
+            try:
+                wav, in_fs = sf.read(str(audio_path), dtype="float32")
+            except Exception as e:
+                print(f"[WARN] Skipping {audio_path}: {e}")
+                continue
 
-            result = apply_composite_degradation(clean_wav.clone(), cfg, noise_wav.clone() if noise_wav is not None else None)
+            if in_fs != 16000:
+                print(f"[WARN] Skipping {audio_path}: sample rate {in_fs} != 16000")
+                continue
 
-            # STFT
-            window = torch.hann_window(512).pow(0.5)
-            spec = stft_to_ri(result.degraded, n_fft=512, hop_length=256, win_length=512, window=window)
+            clean_wav = ensure_mono(torch.from_numpy(wav))
+            split = _assign_split(src_idx, n_sources, args.seed)
 
-            # GTCRN extraction
-            t_start = time.perf_counter()
-            feats = extractor(spec.unsqueeze(0))
-            t_elapsed = time.perf_counter() - t_start
-            extraction_times.append(t_elapsed)
+            for sev_idx, sev in enumerate(severities):
+                local_seed = args.seed * 10000 + src_idx * 100 + sev_idx
+                cache_key = f"{audio_path}_{sev}_{local_seed}"
+                if cache_key in existing:
+                    continue
 
-            labels = make_degradation_labels(result)
+                seed_everything(local_seed)
+                cfg = sample_degradation_config(sev, local_seed)
+                noise_wav = _get_streaming_noise(clean_wav.numel(), local_seed) if cfg.add_noise else None
 
-            cache_entry = {
-                "stats": feats["stats"].squeeze(0).cpu(),
-                "noise_target": torch.tensor([labels["noise_present"]]),
-                "snr_target": torch.tensor([labels["snr_target"]]),
-                "snr_valid": torch.tensor([labels["snr_valid"]]),
-                "bandwidth_target": torch.tensor([labels["bandwidth_class"]]),
-                "bit_target": torch.tensor([labels["bit_class"]]),
-                "severity": sev,
-            }
+                result = apply_composite_degradation(clean_wav.clone(), cfg, noise_wav.clone() if noise_wav is not None else None)
 
-            cache_filename = f"sample_{total_samples:06d}.pt"
-            cache_filepath = out_dir / cache_filename
-            torch.save(cache_entry, cache_filepath)
+                window = torch.hann_window(512).pow(0.5)
+                spec = stft_to_ri(result.degraded, n_fft=512, hop_length=256, win_length=512, window=window)
 
-            index_entries.append({
-                "cache_file": cache_filename,
-                "split": split,
-                "source_path": str(src_path),
-                "severity": sev,
-                "seed": local_seed,
-                "stats_dim": stats_dim,
-            })
+                t_start = time.perf_counter()
+                feats = extractor(spec.unsqueeze(0))
+                t_elapsed = time.perf_counter() - t_start
+                extraction_times.append(t_elapsed)
 
-            total_samples += 1
+                labels = make_degradation_labels(result)
 
-    # Save index
+                cache_entry = {
+                    "stats": feats["stats"].squeeze(0).cpu(),
+                    "noise_target": torch.tensor([labels["noise_present"]]),
+                    "snr_target": torch.tensor([labels["snr_target"]]),
+                    "snr_valid": torch.tensor([labels["snr_valid"]]),
+                    "bandwidth_target": torch.tensor([labels["bandwidth_class"]]),
+                    "bit_target": torch.tensor([labels["bit_class"]]),
+                    "severity": sev,
+                }
+
+                cache_filename = f"sample_{total_samples:06d}.pt"
+                cache_filepath = out_dir / cache_filename
+                torch.save(cache_entry, cache_filepath)
+
+                index_entries.append({
+                    "cache_file": cache_filename,
+                    "split": split,
+                    "source_path": str(audio_path),
+                    "severity": sev,
+                    "seed": local_seed,
+                    "stats_dim": stats_dim,
+                })
+
+                total_samples += 1
+
+            if src_idx % 500 == 0:
+                print(f"[INFO] Progress: {src_idx}/{n_sources} sources, {total_samples} cached samples")
+
+            # Incremental index save after each source
+            if src_idx % 100 == 0 and index_entries:
+                with open(index_path, "w", encoding="utf-8") as f:
+                    for entry in index_entries:
+                        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        # Free memory
+        del manifest_lines
+
+    # Save final index
     with open(index_path, "w", encoding="utf-8") as f:
         for entry in index_entries:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")

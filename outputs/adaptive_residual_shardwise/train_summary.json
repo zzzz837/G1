@@ -1,0 +1,15 @@
+{
+  "epochs": 1,
+  "total_training_time_s": 17.91,
+  "best_valid_loss": 1.6041699250539143,
+  "test_metrics": {
+    "loss": 1.5774766206741333,
+    "mag": 1.5327024459838867,
+    "hf": 0.044556599110364914,
+    "res": 0.0021762403193861246,
+    "processed_batches": 2,
+    "processed_samples": 20
+  },
+  "residual_params": 2184,
+  "early_stopped": false
+}

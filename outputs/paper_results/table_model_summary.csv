@@ -1,0 +1,4 @@
+﻿Module,Trainable Params,Key Output/Role
+Frozen GTCRN,0,Base enhancement + bottleneck stats
+Degradation Estimator,1803,noise / SNR / bandwidth / bit-depth
+Adaptive Residual Module,2184,conditioned spectral residual refinement
