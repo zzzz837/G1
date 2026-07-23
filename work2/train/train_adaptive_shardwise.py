@@ -136,6 +136,7 @@ def main():
     parser.add_argument("--gtcrn-checkpoint", type=str, default="checkpoints/model_trained_on_dns3.tar")
     parser.add_argument("--estimator-checkpoint", type=str, default="outputs/degradation_estimator_fast/best_model.pt")
     parser.add_argument("--output-dir", type=str, default="outputs/adaptive_residual_shardwise")
+    parser.add_argument("--residual-version", type=str, default="v1", choices=["v1", "v2"])
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--mini-batch-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=0.001)
@@ -160,7 +161,7 @@ def main():
     def count_samples(m):
         return sum(len(v) for v in m.values())
 
-    model = GTCRNAdaptive(checkpoint_path=args.gtcrn_checkpoint, device="cpu", freeze_gtcrn=True, freeze_estimator=True)
+    model = GTCRNAdaptive(checkpoint_path=args.gtcrn_checkpoint, device="cpu", freeze_gtcrn=True, freeze_estimator=True, residual_version=args.residual_version)
     if Path(args.estimator_checkpoint).exists():
         est_ckpt = torch.load(args.estimator_checkpoint, map_location="cpu")
         model.estimator.load_state_dict(est_ckpt["model_state_dict"])
@@ -200,6 +201,7 @@ def main():
             "valid_shards": len(valid_map),
             "test_shards": len(test_map),
             "residual_params": counts['residual_trainable'],
+            "residual_version": args.residual_version,
             "cache_dir": str(cache_dir),
             "cache_mode": "adaptive_shardwise",
         }, f, indent=2)
@@ -272,6 +274,7 @@ def main():
             "best_valid_loss": best_valid,
             "test_metrics": test_metrics,
             "residual_params": counts['residual_trainable'],
+            "residual_version": args.residual_version,
             "early_stopped": patience_counter >= args.patience,
         }, f, indent=2)
 

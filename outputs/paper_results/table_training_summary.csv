@@ -1,3 +1,0 @@
-﻿Experiment,Epochs,Total Time (s),Best Valid Loss,Notes
-Degradation Estimator,29,381.13,0.21277934787929922,Formal full-data training
-Adaptive Residual (debug run),1,17.91,1.6041699250539143,Pipeline verified; full training pending

@@ -15,7 +15,7 @@ from typing import Optional
 
 from work2.models.frozen_gtcrn_extractor import FrozenGTCRNFeatureExtractor
 from work2.models.degradation_estimator import DegradationEstimator
-from work2.models.adaptive_residual import AdaptiveResidualModule
+from work2.models.adaptive_residual import AdaptiveResidualModule, AdaptiveResidualModuleV2Formal
 
 
 def build_degradation_condition_vector(
@@ -66,12 +66,14 @@ class GTCRNAdaptive(nn.Module):
         device: str = "cpu",
         freeze_gtcrn: bool = True,
         freeze_estimator: bool = False,
+        residual_version: str = "v1",
     ) -> None:
         super().__init__()
 
         self.device = torch.device(device)
         self.freeze_gtcrn = freeze_gtcrn
         self.freeze_estimator = freeze_estimator
+        self.residual_version = residual_version
 
         self.extractor = FrozenGTCRNFeatureExtractor(
             checkpoint_path=checkpoint_path, device=str(self.device)
@@ -80,9 +82,16 @@ class GTCRNAdaptive(nn.Module):
         self.stats_dim = self.extractor.get_stats_dim()
         self.estimator = DegradationEstimator(input_dim=self.stats_dim).to(self.device)
 
-        self.residual_module = AdaptiveResidualModule(
-            n_freqs=257, cond_dim=9, hidden_dim=32
-        ).to(self.device)
+        if self.residual_version == "v1":
+            self.residual_module = AdaptiveResidualModule(
+                n_freqs=257, cond_dim=9, hidden_dim=32
+            ).to(self.device)
+        elif self.residual_version == "v2":
+            self.residual_module = AdaptiveResidualModuleV2Formal(
+                n_freqs=257, cond_dim=9, hidden_dim=32
+            ).to(self.device)
+        else:
+            raise ValueError(f"Unknown residual_version: {self.residual_version}")
 
         self._apply_freezing()
 

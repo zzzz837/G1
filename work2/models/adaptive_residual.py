@@ -1,42 +1,27 @@
 """
-Adaptive Residual Compensation Module.
+Adaptive residual modules for EDCR-Net.
 
-Takes GTCRN-enhanced spectrogram and degradation predictions,
-generates a frequency-aware, condition-modulated residual correction.
-
-Architecture:
-  enhanced_spec (B,2,T,F) + degradation_conds (B,9)
-    → Condition Embedding (FC→LN→PReLU)
-    → Frequency-band processing (Conv1d on F-dim)
-    → Condition-modulated gating
-    → Residual added to base enhanced
+V2-Refined-B changes relative to V2-Refined-A:
+- keeps alpha_max=0.2 and the global condition gate
+- initializes the global gate conservatively (default sigmoid(-2)=0.119)
+- zero-initializes expert output layers, so training starts exactly at Base
+- bounds each expert candidate relative to the RMS of its Base band
+  so expert weights cannot bypass alpha/global gates by arbitrary rescaling
+- returns effective/raw gates and per-sample residual ratios
 """
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class AdaptiveResidualModule(nn.Module):
-    """
-    Lightweight adaptive residual compensator.
+    """Original V1 residual module retained for comparison."""
 
-    Condition vector (B, 9):
-        [noise_logit(1), snr_pred(1), bw_logits(3), bit_logits(4)]
-
-    Operates on magnitude spectrogram, then reconstructs real/imag.
-    """
-
-    def __init__(
-        self,
-        n_freqs: int = 257,
-        cond_dim: int = 9,
-        hidden_dim: int = 32,
-    ) -> None:
+    def __init__(self, n_freqs: int = 257, cond_dim: int = 9, hidden_dim: int = 32) -> None:
         super().__init__()
-
-        self.n_freqs = n_freqs
-        self.cond_dim = cond_dim
-
+        self.n_freqs = int(n_freqs)
+        self.cond_dim = int(cond_dim)
         self.cond_embed = nn.Sequential(
             nn.Linear(cond_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -44,11 +29,9 @@ class AdaptiveResidualModule(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.PReLU(),
         )
-
         self.freq_conv1 = nn.Conv1d(2, 16, kernel_size=5, padding=2, groups=2)
         self.freq_prelu = nn.PReLU()
         self.freq_conv2 = nn.Conv1d(16, 2, kernel_size=5, padding=2, groups=2)
-
         self.cond_gate = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.PReLU(),
@@ -56,72 +39,71 @@ class AdaptiveResidualModule(nn.Module):
             nn.Sigmoid(),
         )
 
-    def forward(
-        self,
-        enhanced_spec: torch.Tensor,
-        degradation_conds: torch.Tensor,
-    ) -> dict[str, torch.Tensor]:
-        """
-        Args:
-            enhanced_spec: (B, 2, T, F) GTCRN base enhanced spectrogram
-            degradation_conds: (B, 9) concatenated degradation predictions
-                [noise_logit(1), snr_pred(1), bw_logits(3), bit_logits(4)]
-
-        Returns:
-            dict with:
-                enhanced_final: (B, 2, T, F) final enhanced spectrogram
-                residual: (B, 2, T, F) the applied residual correction
-                alpha: (B, 2, 1) per-channel gate values
-        """
-        B, C, T, F_in = enhanced_spec.shape
-
-        if C != 2:
-            raise ValueError(f"Expected 2 channels (real, imag), got {C}")
+    def forward(self, enhanced_spec: torch.Tensor, degradation_conds: torch.Tensor) -> dict[str, torch.Tensor]:
+        if enhanced_spec.ndim != 4:
+            raise ValueError("enhanced_spec must be shaped (B,2,T,F).")
+        bsz, channels, frames, n_freqs = enhanced_spec.shape
+        if channels != 2 or n_freqs != self.n_freqs:
+            raise ValueError(f"Unexpected enhanced_spec shape: {tuple(enhanced_spec.shape)}")
+        if degradation_conds.shape != (bsz, self.cond_dim):
+            raise ValueError(
+                f"degradation_conds must be ({bsz},{self.cond_dim}), "
+                f"got {tuple(degradation_conds.shape)}"
+            )
 
         cond = self.cond_embed(degradation_conds)
-
-        x = enhanced_spec.reshape(B * T, C, F_in)
+        x = enhanced_spec.permute(0, 2, 1, 3).contiguous().reshape(
+            bsz * frames, channels, n_freqs
+        )
         x = self.freq_prelu(self.freq_conv1(x))
         x = self.freq_conv2(x)
-        residual = x.reshape(B, T, C, F_in).permute(0, 2, 1, 3)
-
-        alpha = self.cond_gate(cond)
-        alpha = alpha.unsqueeze(-1).unsqueeze(-1)
-
-        residual_gated = alpha * residual
-        enhanced_final = enhanced_spec + residual_gated
-
+        candidate = x.reshape(bsz, frames, channels, n_freqs).permute(0, 2, 1, 3).contiguous()
+        alpha = self.cond_gate(cond).unsqueeze(-1).unsqueeze(-1)
+        residual = alpha * candidate
+        enhanced_final = enhanced_spec + residual
+        residual_ratio = torch.linalg.vector_norm(residual.flatten(1), dim=1) / (
+            torch.linalg.vector_norm(enhanced_spec.flatten(1), dim=1) + 1e-8
+        )
         return {
             "enhanced_final": enhanced_final,
-            "residual": residual_gated,
-            "alpha": alpha,
+            "residual": residual,
+            "alpha": alpha.squeeze(-1).squeeze(-1),
+            "raw_alpha": alpha.squeeze(-1).squeeze(-1),
+            "global_alpha": torch.ones(bsz, 1, device=enhanced_spec.device),
+            "residual_ratio": residual_ratio,
         }
 
     def count_trainable_params(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 
-class AdaptiveResidualModuleV2(nn.Module):
-    """
-    Enhanced version with frequency-band attention.
-
-    Splits spectrum into low/mid/high bands and applies per-band
-    condition-modulated gating with learnable residual kernels.
-    """
+class AdaptiveResidualModuleV2Formal(nn.Module):
+    """Gate-controlled, amplitude-bounded three-band residual module."""
 
     def __init__(
         self,
         n_freqs: int = 257,
         cond_dim: int = 9,
         hidden_dim: int = 32,
-        n_bands: int = 3,
+        alpha_max: float = 0.2,
+        candidate_scale: float = 1.0,
+        global_gate_init: float = -2.0,
     ) -> None:
         super().__init__()
+        if n_freqs < 3:
+            raise ValueError("n_freqs must be at least 3.")
+        if not (0.0 < alpha_max <= 1.0):
+            raise ValueError("alpha_max must be in (0,1].")
+        if candidate_scale <= 0:
+            raise ValueError("candidate_scale must be positive.")
 
-        self.n_freqs = n_freqs
-        self.n_bands = n_bands
-
-        self.band_boundaries = [0, int(n_freqs * 0.3), int(n_freqs * 0.7), n_freqs]
+        self.n_freqs = int(n_freqs)
+        self.cond_dim = int(cond_dim)
+        self.n_bands = 3
+        self.alpha_max = float(alpha_max)
+        self.candidate_scale = float(candidate_scale)
+        self.global_gate_init = float(global_gate_init)
+        self.band_boundaries = [0, int(n_freqs * 0.30), int(n_freqs * 0.70), n_freqs]
 
         self.cond_embed = nn.Sequential(
             nn.Linear(cond_dim, hidden_dim),
@@ -130,56 +112,119 @@ class AdaptiveResidualModuleV2(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.PReLU(),
         )
-
-        self.band_convs = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv1d(2, 8, kernel_size=5, padding=2, groups=2),
-                nn.PReLU(),
-                nn.Conv1d(8, 2, kernel_size=5, padding=2, groups=2),
-            )
-            for _ in range(n_bands)
-        ])
-
-        self.band_gate = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
+        self.expert_gate = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
             nn.PReLU(),
-            nn.Linear(hidden_dim, n_bands * 2),
+            nn.Linear(hidden_dim // 2, self.n_bands),
+        )
+        self.global_gate = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.PReLU(),
+            nn.Linear(hidden_dim // 2, 1),
             nn.Sigmoid(),
         )
 
-    def forward(
-        self,
-        enhanced_spec: torch.Tensor,
-        degradation_conds: torch.Tensor,
-    ) -> dict[str, torch.Tensor]:
-        B, C, T, F_in = enhanced_spec.shape
+        self.low_expert = self._make_expert()
+        self.mid_expert = self._make_expert()
+        self.high_expert = self._make_expert()
+        self.reset_parameters()
+
+    @staticmethod
+    def _make_expert() -> nn.Sequential:
+        return nn.Sequential(
+            nn.Conv1d(2, 8, kernel_size=5, padding=2, groups=2),
+            nn.PReLU(),
+            nn.Conv1d(8, 2, kernel_size=5, padding=2, groups=2),
+        )
+
+    def reset_parameters(self) -> None:
+        # Exact Base initialization.
+        for expert in (self.low_expert, self.mid_expert, self.high_expert):
+            last_conv = expert[-1]
+            nn.init.zeros_(last_conv.weight)
+            if last_conv.bias is not None:
+                nn.init.zeros_(last_conv.bias)
+
+        # Conservative global-gate initialization.
+        final_linear = self.global_gate[-2]
+        if not isinstance(final_linear, nn.Linear):
+            raise TypeError("global_gate must end with Linear -> Sigmoid.")
+        nn.init.zeros_(final_linear.weight)
+        nn.init.constant_(final_linear.bias, self.global_gate_init)
+
+        # Raw band gates start at alpha_max * 0.5.
+        band_linear = self.expert_gate[-1]
+        nn.init.zeros_(band_linear.bias)
+
+    def _bound_candidate(self, candidate: torch.Tensor, band_spec: torch.Tensor) -> torch.Tensor:
+        """
+        Bound candidate amplitude by the Base-band RMS.
+
+        tanh prevents arbitrary expert-weight growth from cancelling small gates.
+        With effective gate <= alpha_max, the residual ratio is therefore controlled
+        by construction rather than only by a soft penalty.
+        """
+        band_rms = band_spec.detach().pow(2).mean(dim=(1, 2, 3), keepdim=True).sqrt()
+        band_rms = band_rms.clamp_min(1e-5)
+        return torch.tanh(candidate) * band_rms * self.candidate_scale
+
+    def forward(self, enhanced_spec: torch.Tensor, degradation_conds: torch.Tensor) -> dict[str, torch.Tensor]:
+        if enhanced_spec.ndim != 4:
+            raise ValueError("enhanced_spec must be shaped (B,2,T,F).")
+        bsz, channels, frames, n_freqs = enhanced_spec.shape
+        if channels != 2 or n_freqs != self.n_freqs:
+            raise ValueError(f"Unexpected enhanced_spec shape: {tuple(enhanced_spec.shape)}")
+        if degradation_conds.shape != (bsz, self.cond_dim):
+            raise ValueError(
+                f"degradation_conds must be ({bsz},{self.cond_dim}), "
+                f"got {tuple(degradation_conds.shape)}"
+            )
+
         cond = self.cond_embed(degradation_conds)
+        raw_alpha = self.alpha_max * torch.sigmoid(self.expert_gate(cond))
+        global_alpha = self.global_gate(cond)
+        effective_alpha = raw_alpha * global_alpha
 
-        alpha_per_band = self.band_gate(cond)
-        alpha_per_band = alpha_per_band.reshape(B, self.n_bands, C).transpose(1, 2)
-        alpha_per_band = alpha_per_band.unsqueeze(-1)
+        experts = (self.low_expert, self.mid_expert, self.high_expert)
+        residual_bands: list[torch.Tensor] = []
+        candidate_ratios: list[torch.Tensor] = []
 
-        residual = torch.zeros_like(enhanced_spec)
+        for band_idx, expert in enumerate(experts):
+            f_start = self.band_boundaries[band_idx]
+            f_end = self.band_boundaries[band_idx + 1]
+            band_width = f_end - f_start
+            band_spec = enhanced_spec[..., f_start:f_end]
+            band_flat = band_spec.permute(0, 2, 1, 3).contiguous().reshape(
+                bsz * frames, channels, band_width
+            )
+            candidate = expert(band_flat)
+            candidate = candidate.reshape(bsz, frames, channels, band_width).permute(
+                0, 2, 1, 3
+            ).contiguous()
+            candidate = self._bound_candidate(candidate, band_spec)
 
-        for b in range(self.n_bands):
-            f_start = self.band_boundaries[b]
-            f_end = self.band_boundaries[b + 1]
+            gate = effective_alpha[:, band_idx].view(bsz, 1, 1, 1)
+            residual_bands.append(gate * candidate)
 
-            band_spec = enhanced_spec[:, :, :, f_start:f_end]
-            b_t, b_f = band_spec.shape[2], band_spec.shape[3]
-            band_flat = band_spec.reshape(B * b_t, C, b_f)
-            band_residual = self.band_convs[b](band_flat)
-            band_residual = band_residual.reshape(B, b_t, C, b_f).permute(0, 2, 1, 3)
+            candidate_ratio = torch.linalg.vector_norm(candidate.flatten(1), dim=1) / (
+                torch.linalg.vector_norm(band_spec.flatten(1), dim=1) + 1e-8
+            )
+            candidate_ratios.append(candidate_ratio)
 
-            alpha_b = alpha_per_band[:, :, b:b+1]
-            residual[:, :, :, f_start:f_end] = alpha_b * band_residual
-
+        residual = torch.cat(residual_bands, dim=-1)
         enhanced_final = enhanced_spec + residual
+        residual_ratio = torch.linalg.vector_norm(residual.flatten(1), dim=1) / (
+            torch.linalg.vector_norm(enhanced_spec.flatten(1), dim=1) + 1e-8
+        )
 
         return {
             "enhanced_final": enhanced_final,
             "residual": residual,
-            "alpha": alpha_per_band,
+            "alpha": effective_alpha,
+            "raw_alpha": raw_alpha,
+            "global_alpha": global_alpha,
+            "residual_ratio": residual_ratio,
+            "candidate_ratio": torch.stack(candidate_ratios, dim=1),
         }
 
     def count_trainable_params(self) -> int:
