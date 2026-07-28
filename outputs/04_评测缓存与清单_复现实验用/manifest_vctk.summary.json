@@ -1,0 +1,11 @@
+{
+  "total_files": 44247,
+  "train": 35397,
+  "valid": 4425,
+  "test": 4425,
+  "seed": 2026,
+  "clean_dir": "data/vctk_16k",
+  "noise_dir": null,
+  "total_duration_seconds": 158564.89,
+  "mean_duration_seconds": 3.5836
+}

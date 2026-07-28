@@ -1,0 +1,17 @@
+{
+  "epochs": 50,
+  "mini_batch_size": 32,
+  "learning_rate": 0.001,
+  "seed": 2026,
+  "train_samples": 141696,
+  "valid_samples": 17636,
+  "test_samples": 17656,
+  "train_shards": 1383,
+  "valid_shards": 1336,
+  "test_shards": 1338,
+  "residual_params": 2295,
+  "residual_version": "v2",
+  "condition_source": "oracle",
+  "cache_dir": "outputs\\adaptive_cache_sharded",
+  "cache_mode": "adaptive_cached_oracle"
+}

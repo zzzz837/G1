@@ -1,0 +1,72 @@
+{
+  "per_method": {
+    "base_si_sdr": {
+      "mean": 17.5035,
+      "std": 6.7381,
+      "n": 284
+    },
+    "base_lsd": {
+      "mean": 13.0566,
+      "std": 2.1812,
+      "n": 284
+    },
+    "base_hf_lsd": {
+      "mean": 13.824,
+      "std": 2.7825,
+      "n": 284
+    },
+    "v1_uncond_si_sdr": {
+      "mean": 17.443,
+      "std": 6.4999,
+      "n": 284
+    },
+    "v1_uncond_lsd": {
+      "mean": 11.2049,
+      "std": 2.8201,
+      "n": 284
+    },
+    "v1_uncond_hf_lsd": {
+      "mean": 11.4418,
+      "std": 3.5141,
+      "n": 284
+    },
+    "v1_cond_si_sdr": {
+      "mean": 17.4545,
+      "std": 6.5064,
+      "n": 284
+    },
+    "v1_cond_lsd": {
+      "mean": 11.2007,
+      "std": 2.815,
+      "n": 284
+    },
+    "v1_cond_hf_lsd": {
+      "mean": 11.4408,
+      "std": 3.5085,
+      "n": 284
+    }
+  },
+  "paired_cond_vs_uncond": [
+    {
+      "metric": "si_sdr",
+      "n_pairs": 284,
+      "mean_diff": 0.0115,
+      "p_value": 0.0,
+      "interpretation": "cond \u2260 uncond (p<0.05)"
+    },
+    {
+      "metric": "lsd",
+      "n_pairs": 284,
+      "mean_diff": -0.0042,
+      "p_value": 1e-06,
+      "interpretation": "cond \u2260 uncond (p<0.05)"
+    },
+    {
+      "metric": "hf_lsd",
+      "n_pairs": 284,
+      "mean_diff": -0.001,
+      "p_value": 0.54115,
+      "interpretation": "cond \u2248 uncond (p>=0.05)"
+    }
+  ]
+}
