@@ -1,7 +1,11 @@
 """
 Generate representative case spectrogram figures for thesis.
+
+Final thesis version focuses on the deployed main model:
+Clean / Degraded / Base / EDCR-V1-Predicted-0.75 plus error maps.
 """
 import argparse
+import csv
 import json
 import sys
 from pathlib import Path
@@ -12,8 +16,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from work2.data.stft_utils import ri_to_istft
-from work2.models.adaptive_residual import AdaptiveResidualModule, AdaptiveResidualModuleV2Formal
+from work2.models.adaptive_residual import AdaptiveResidualModule
 
 
 def load_index(index_path: Path, split: str):
@@ -40,32 +43,56 @@ def build_oracle_condition(noise_target, snr_target, bandwidth_target, bit_targe
     return torch.cat([noise_target, snr_norm, bw_oh, bit_oh], dim=1)
 
 
+def load_sentence_rows(csv_path: Path):
+    rows = []
+    with open(csv_path, 'r', encoding='utf-8-sig', newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+    return rows
+
+
+def select_representative_samples(sentence_csv: Path):
+    rows = load_sentence_rows(sentence_csv)
+    selected = {}
+    for sev in ['light', 'medium', 'heavy']:
+        group = [r for r in rows if r['method'] == 'v1_s0p75' and r['severity'] == sev]
+        if not group:
+            raise RuntimeError(f'No rows found for severity={sev} in {sentence_csv}')
+        deltas = np.array([float(r['delta_hf_lsd_vs_base']) for r in group], dtype=np.float64)
+        median = float(np.median(deltas))
+        best = min(group, key=lambda r: abs(float(r['delta_hf_lsd_vs_base']) - median))
+        selected[sev] = best['sample_id']
+    return selected
+
+
 def spec_mag_db(spec):
-    mag = np.sqrt(spec[...,0]**2 + spec[...,1]**2 + 1e-12)
-    return 20*np.log10(mag + 1e-12)
+    mag = np.sqrt(spec[..., 0] ** 2 + spec[..., 1] ** 2 + 1e-12)
+    return 20 * np.log10(mag + 1e-12)
 
 
-def plot_case(savepath, clean, degraded, base, v1, v2, vmax=None, vmin=None):
-    titles = ["Clean", "Degraded", "Base", "EDCR-V1", "EDCR-V2", "Base Error", "V1 Error", "V2 Error"]
+def plot_case(savepath, clean, degraded, base, v1, vmax=None, vmin=None):
+    titles = ["Clean", "Degraded", "Base", "EDCR-V1-Predicted-0.75", "Base Error", "EDCR Error"]
     specs = [
         spec_mag_db(clean),
         spec_mag_db(degraded),
         spec_mag_db(base),
         spec_mag_db(v1),
-        spec_mag_db(v2),
         np.abs(spec_mag_db(base) - spec_mag_db(clean)),
         np.abs(spec_mag_db(v1) - spec_mag_db(clean)),
-        np.abs(spec_mag_db(v2) - spec_mag_db(clean)),
     ]
     if vmax is None:
-        vmax = max(float(np.max(s)) for s in specs[:5])
+        vmax = max(float(np.max(s)) for s in specs[:4])
     if vmin is None:
-        vmin = min(float(np.min(s)) for s in specs[:5])
+        vmin = min(float(np.min(s)) for s in specs[:4])
 
-    fig, axes = plt.subplots(4, 2, figsize=(12, 10))
+    error_specs = specs[4:]
+    err_vmax = np.percentile(np.concatenate([e.ravel() for e in error_specs]), 99)
+
+    fig, axes = plt.subplots(3, 2, figsize=(12, 8.5))
     for ax, title, spec in zip(axes.flat, titles, specs):
         if 'Error' in title:
-            im = ax.imshow(spec, origin='lower', aspect='auto', cmap='magma')
+            im = ax.imshow(spec, origin='lower', aspect='auto', cmap='magma', vmin=0, vmax=err_vmax)
         else:
             im = ax.imshow(spec, origin='lower', aspect='auto', cmap='inferno', vmin=vmin, vmax=vmax)
         ax.set_title(title)
@@ -80,10 +107,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cache-dir', type=str, default='outputs/adaptive_cache_sharded')
     parser.add_argument('--v1-checkpoint', type=str, default='outputs/adaptive_residual_cached_v1_oracle/best_model.pt')
-    parser.add_argument('--v2-checkpoint', type=str, default='outputs/adaptive_residual_cached_v2_oracle_fixed/best_model.pt')
+    parser.add_argument('--sentence-csv', type=str, default='outputs/paper_results_scale_075_predicted_full/sentence_level_metrics.csv')
     parser.add_argument('--output-dir', type=str, default='outputs/paper_results_cases')
     parser.add_argument('--split', type=str, default='test')
     parser.add_argument('--cpu-threads', type=int, default=8)
+    parser.add_argument('--residual-scale', type=float, default=0.75)
     args = parser.parse_args()
 
     torch.set_num_threads(args.cpu_threads)
@@ -95,26 +123,20 @@ def main():
 
     cache_dir = Path(args.cache_dir)
     shard_map = load_index(cache_dir / 'index.jsonl', args.split)
-    selected = {'light': None, 'medium': None, 'heavy': None}
-
-    # choose first representative sample per target severity
-    for shard_file, offsets in shard_map.items():
-        shard = torch.load(cache_dir / shard_file, map_location='cpu', weights_only=False)
-        for off in offsets:
-            sev = shard['severity'][off]
-            if sev in selected and selected[sev] is None:
-                selected[sev] = (shard_file, off)
-        if all(v is not None for v in selected.values()):
-            break
+    selected = select_representative_samples(Path(args.sentence_csv))
 
     v1 = AdaptiveResidualModule(n_freqs=257, cond_dim=9, hidden_dim=32).to(device)
-    v2 = AdaptiveResidualModuleV2Formal(n_freqs=257, cond_dim=9, hidden_dim=32).to(device)
-    v1.load_state_dict(torch.load(args.v1_checkpoint, map_location='cpu')['residual_state_dict'])
-    v2.load_state_dict(torch.load(args.v2_checkpoint, map_location='cpu')['residual_state_dict'])
-    v1.eval(); v2.eval()
+    v1_ckpt = torch.load(args.v1_checkpoint, map_location='cpu')
+    print(f"[CONFIG] residual_scale={args.residual_scale}")
+    print(f"[CHECKPOINT] V1={Path(args.v1_checkpoint).resolve()}")
+    print(f"[EPOCH] V1={v1_ckpt.get('epoch')}")
+    v1.load_state_dict(v1_ckpt['residual_state_dict'])
+    v1.eval()
 
     for idx, sev in enumerate(['light', 'medium', 'heavy'], start=1):
-        shard_file, off = selected[sev]
+        sample_id = selected[sev]
+        shard_file, off_str = sample_id.split(':')
+        off = int(off_str)
         shard = torch.load(cache_dir / shard_file, map_location='cpu', weights_only=False)
         clean = shard['clean_spec'][off].float()
         degraded = shard['degraded_spec'][off].float()
@@ -126,9 +148,9 @@ def main():
         cond = build_oracle_condition(noise_t, snr_t, bw_t, bit_t).to(device)
         base_perm = base.unsqueeze(0).permute(0,3,2,1).contiguous().to(device)
         with torch.inference_mode():
-            v1_spec = v1(base_perm, cond)['enhanced_final'].permute(0,3,2,1)[0].cpu().numpy()
-            v2_spec = v2(base_perm, cond)['enhanced_final'].permute(0,3,2,1)[0].cpu().numpy()
-        plot_case(out_dir / f'spectrogram_case_0{idx}.png', clean.numpy(), degraded.numpy(), base.numpy(), v1_spec, v2_spec)
+            v1_out = v1(base_perm, cond)
+            v1_spec = (base_perm + args.residual_scale * v1_out['residual']).permute(0,3,2,1)[0].cpu().numpy()
+        plot_case(out_dir / f'spectrogram_case_0{idx}.png', clean.numpy(), degraded.numpy(), base.numpy(), v1_spec)
 
     print(f'[DONE] Generated case spectrograms in {out_dir}')
 

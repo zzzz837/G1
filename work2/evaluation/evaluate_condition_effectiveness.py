@@ -30,6 +30,10 @@ from work2.models.degradation_estimator import DegradationEstimator
 from work2.models.adaptive_residual import AdaptiveResidualModule, AdaptiveResidualModuleV2Formal
 
 SEVERITIES = ["clean", "light", "medium", "heavy"]
+SAMPLE_RATE = 16000
+N_FFT = 512
+HF_START_HZ = 4000
+HF_START_BIN = round(HF_START_HZ / (SAMPLE_RATE / N_FFT))
 
 
 def load_index(index_path: Path, split: str):
@@ -61,7 +65,7 @@ def lsd(clean_spec, test_spec, hf_only=False):
     clean_mag = np.sqrt(clean_spec[..., 0] ** 2 + clean_spec[..., 1] ** 2 + 1e-12)
     test_mag = np.sqrt(test_spec[..., 0] ** 2 + test_spec[..., 1] ** 2 + 1e-12)
     if hf_only:
-        start = clean_mag.shape[0] // 2  # 4kHz+ for 16kHz audio
+        start = HF_START_BIN
         clean_mag = clean_mag[start:]
         test_mag = test_mag[start:]
     val = np.sqrt(np.mean((20 * np.log10(clean_mag + 1e-12) - 20 * np.log10(test_mag + 1e-12)) ** 2, axis=0)).mean()
@@ -82,9 +86,11 @@ def build_zero_condition(batch_size, device):
     return torch.zeros(batch_size, 9, dtype=torch.float32, device=device)
 
 
-def build_shuffled_condition(oracle_cond):
-    idx = torch.randperm(oracle_cond.shape[0], device=oracle_cond.device)
-    return oracle_cond[idx]
+def build_shuffled_condition(oracle_cond, seed: int):
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+    idx = torch.randperm(oracle_cond.shape[0], generator=generator)
+    return oracle_cond[idx.to(oracle_cond.device)]
 
 
 def build_predicted_condition(stats, estimator):
@@ -125,6 +131,9 @@ def main():
     parser.add_argument("--max-shards", type=int, default=None)
     parser.add_argument("--cpu-threads", type=int, default=8)
     parser.add_argument("--fast-metrics-only", action="store_true")
+    parser.add_argument("--residual-scale", type=float, default=0.75)
+    parser.add_argument("--disable-pesq", action="store_true")
+    parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
 
     torch.set_num_threads(args.cpu_threads)
@@ -145,6 +154,10 @@ def main():
     else:
         residual_module = AdaptiveResidualModuleV2Formal(n_freqs=257, cond_dim=9, hidden_dim=32).to(device)
     residual_ckpt = torch.load(args.residual_checkpoint, map_location='cpu')
+    print(f"[CONFIG] residual_scale={args.residual_scale}")
+    print(f"[CONFIG] seed={args.seed}")
+    print(f"[CHECKPOINT] residual={Path(args.residual_checkpoint).resolve()}")
+    print(f"[EPOCH] residual={residual_ckpt.get('epoch')}")
     residual_module.load_state_dict(residual_ckpt['residual_state_dict'])
     residual_module.eval()
 
@@ -171,7 +184,7 @@ def main():
             severity_batch = [shard['severity'][off] for off in offsets]
 
             oracle_cond = build_oracle_condition(noise_batch, snr_batch, bw_batch, bit_batch)
-            shuffled_cond = build_shuffled_condition(oracle_cond)
+            shuffled_cond = build_shuffled_condition(oracle_cond, seed=args.seed + shard_idx)
             zero_cond = build_zero_condition(oracle_cond.shape[0], oracle_cond.device)
 
             # predicted conditions from cached degraded specs via frozen extractor+estimator
@@ -188,7 +201,8 @@ def main():
             enhanced = {}
             for mode, cond in cond_map.items():
                 out = residual_module(base_perm, cond)
-                enhanced[mode] = out['enhanced_final'].permute(0, 3, 2, 1).contiguous().cpu()
+                scaled_final = base_perm + args.residual_scale * out['residual']
+                enhanced[mode] = scaled_final.permute(0, 3, 2, 1).contiguous().cpu()
 
             for local_idx, off in enumerate(offsets):
                 clean_spec = clean_batch[local_idx].numpy()

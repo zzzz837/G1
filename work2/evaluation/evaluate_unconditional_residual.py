@@ -44,7 +44,10 @@ def si_sdr(ref, est, eps=1e-8):
 def lsd(clean, test, hf=False):
     cm = np.sqrt(clean[...,0]**2+clean[...,1]**2+1e-12)
     tm = np.sqrt(test[...,0]**2+test[...,1]**2+1e-12)
-    if hf: start = cm.shape[0]//2; cm=cm[start:]; tm=tm[start:]
+    if hf:
+        start = round(4000 / (16000 / 512))
+        cm=cm[start:]
+        tm=tm[start:]
     return float(np.sqrt(np.mean((20*np.log10(cm+1e-12)-20*np.log10(tm+1e-12))**2,axis=0)).mean())
 
 def build_oracle_condition(noise_t, snr_t, bw_t, bit_t):
@@ -63,6 +66,8 @@ def main():
     parser.add_argument("--max-shards", type=int, default=None)
     parser.add_argument("--cpu-threads", type=int, default=8)
     parser.add_argument("--fast-metrics-only", action="store_true")
+    parser.add_argument("--residual-scale", type=float, default=0.75)
+    parser.add_argument("--disable-pesq", action="store_true")
     args = parser.parse_args()
 
     torch.set_num_threads(args.cpu_threads); torch.set_num_interop_threads(1)
@@ -74,7 +79,11 @@ def main():
     if args.max_shards: shard_files = shard_files[:args.max_shards]
 
     v1 = AdaptiveResidualModule(n_freqs=257, cond_dim=9, hidden_dim=32).to(device)
-    v1.load_state_dict(torch.load(args.v1_checkpoint, map_location="cpu")["residual_state_dict"])
+    ckpt = torch.load(args.v1_checkpoint, map_location="cpu")
+    print(f"[CONFIG] residual_scale={args.residual_scale}")
+    print(f"[CHECKPOINT] V1={Path(args.v1_checkpoint).resolve()}")
+    print(f"[EPOCH] V1={ckpt.get('epoch')}")
+    v1.load_state_dict(ckpt["residual_state_dict"])
     v1.eval()
 
     window = torch.hann_window(512).pow(0.5)
@@ -95,8 +104,10 @@ def main():
             zero = torch.zeros_like(oracle)
             bp = base_b.permute(0,3,2,1).contiguous().to(device)
 
-            v1_ora = v1(bp, oracle)["enhanced_final"].permute(0,3,2,1).contiguous().cpu()
-            v1_unc = v1(bp, zero)["enhanced_final"].permute(0,3,2,1).contiguous().cpu()
+            out_ora = v1(bp, oracle)
+            out_unc = v1(bp, zero)
+            v1_ora = (bp + args.residual_scale * out_ora["residual"]).permute(0,3,2,1).contiguous().cpu()
+            v1_unc = (bp + args.residual_scale * out_unc["residual"]).permute(0,3,2,1).contiguous().cpu()
 
             for li, off in enumerate(offs):
                 clean_s = clean_b[li].numpy()

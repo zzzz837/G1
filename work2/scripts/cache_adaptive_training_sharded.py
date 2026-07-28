@@ -95,6 +95,8 @@ def main():
     parser.add_argument("--shard-size", type=int, default=256)
     parser.add_argument("--segment-seconds", type=float, default=2.0)
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument("--only-split", type=str, default=None, choices=["train", "valid", "test"],
+                        help="Only cache samples whose manifest split matches this value")
     args = parser.parse_args()
 
     seed_everything(args.seed)
@@ -135,7 +137,9 @@ def main():
         target_len = int(args.segment_seconds * in_fs)
         clean_wav = match_length(clean_wav, target_len)
         split = _assign_split(src_idx, args.seed)
-
+        if args.only_split is not None and split != args.only_split:
+            continue
+ 
         for sev_idx, sev in enumerate(SEVERITIES):
             local_seed = args.seed * 10000 + src_idx * 100 + sev_idx
             key = (str(audio_path), sev, local_seed)
