@@ -1,3 +1,0 @@
-﻿Model,Total Params,Added Params,Residual-stage Trainable Params,Total Learned Params,Checkpoint Size MB
-Base Enhancer,48245,0,0,0,n/a
-EDCR-V1,52232,3987,2184,3987,0.0148

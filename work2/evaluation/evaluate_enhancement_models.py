@@ -117,7 +117,7 @@ def main():
     parser.add_argument("--condition-mode", type=str, default="predicted", choices=["predicted", "oracle"], help="Condition source for V1 evaluation")
     parser.add_argument("--gtcrn-checkpoint", type=str, default="checkpoints/model_trained_on_dns3.tar")
     parser.add_argument("--estimator-checkpoint", type=str, default="outputs/degradation_estimator_fast/best_model.pt")
-    parser.add_argument("--residual-scale", type=float, default=0.75, help="Single residual scale (legacy option)")
+    parser.add_argument("--residual-scale", type=float, default=0.65, help="Single residual scale (legacy option)")
     parser.add_argument("--residual-scales", type=str, default=None, help="Comma-separated residual scales, e.g. 0.5,0.75,0.9,1.0")
     parser.add_argument("--progress-interval", type=int, default=5, help="Print progress every N shards")
     args = parser.parse_args()

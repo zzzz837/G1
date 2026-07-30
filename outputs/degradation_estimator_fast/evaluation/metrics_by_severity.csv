@@ -1,5 +1,0 @@
-severity,n_samples,noise_accuracy,bandwidth_accuracy,bit_accuracy
-clean,4414,1.0,0.9887,0.9878
-light,4414,0.9995,0.9959,0.9638
-medium,4414,1.0,1.0,0.5263
-heavy,4414,1.0,1.0,0.9993

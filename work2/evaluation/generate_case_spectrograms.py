@@ -111,7 +111,7 @@ def main():
     parser.add_argument('--output-dir', type=str, default='outputs/paper_results_cases')
     parser.add_argument('--split', type=str, default='test')
     parser.add_argument('--cpu-threads', type=int, default=8)
-    parser.add_argument('--residual-scale', type=float, default=0.75)
+    parser.add_argument('--residual-scale', type=float, default=0.65)
     args = parser.parse_args()
 
     torch.set_num_threads(args.cpu_threads)

@@ -131,7 +131,7 @@ def main():
     parser.add_argument("--max-shards", type=int, default=None)
     parser.add_argument("--cpu-threads", type=int, default=8)
     parser.add_argument("--fast-metrics-only", action="store_true")
-    parser.add_argument("--residual-scale", type=float, default=0.75)
+    parser.add_argument("--residual-scale", type=float, default=0.65)
     parser.add_argument("--disable-pesq", action="store_true")
     parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
