@@ -122,6 +122,7 @@ class GTCRNAdaptive(nn.Module):
     def forward(
         self,
         spec_ri: torch.Tensor,
+        force_residual_scale: float | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Full forward pass.
@@ -158,7 +159,7 @@ class GTCRNAdaptive(nn.Module):
             degradation_preds["bit_logits"],
         )
 
-        residual_out = self.residual_module(enhanced_base_permuted, cond)
+        residual_out = self.residual_module.forward_v1_impl(enhanced_base_permuted, cond, force_scale=force_residual_scale) if hasattr(self.residual_module, 'forward_v1_impl') else self.residual_module(enhanced_base_permuted, cond)
 
         enhanced_final_permuted = residual_out["enhanced_final"]
         enhanced_final = enhanced_final_permuted.permute(0, 3, 2, 1)
@@ -169,6 +170,9 @@ class GTCRNAdaptive(nn.Module):
             "enhanced_final": enhanced_final,
             "enhanced_base": enhanced_base,
             "residual": residual,
+            "raw_residual": residual_out.get("raw_residual", residual_out["residual"]).permute(0, 3, 2, 1) if residual_out.get("raw_residual") is not None else residual,
+            "dynamic_scale": residual_out.get("dynamic_scale"),
+            "global_alpha": residual_out.get("global_alpha"),
             "degradation_conds": cond,
             "degradation_preds": degradation_preds,
             "bottleneck": feats["bottleneck"],

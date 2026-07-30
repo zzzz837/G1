@@ -1,6 +1,7 @@
 """
 Adaptive residual modules for EDCR-Net.
 
+V1 currently supports an optional sample-wise dynamic residual scale head.
 V2-Refined-B changes relative to V2-Refined-A:
 - keeps alpha_max=0.2 and the global condition gate
 - initializes the global gate conservatively (default sigmoid(-2)=0.119)
@@ -11,6 +12,7 @@ V2-Refined-B changes relative to V2-Refined-A:
 """
 from __future__ import annotations
 
+import math
 import torch
 import torch.nn as nn
 
@@ -18,10 +20,21 @@ import torch.nn as nn
 class AdaptiveResidualModule(nn.Module):
     """Original V1 residual module retained for comparison."""
 
-    def __init__(self, n_freqs: int = 257, cond_dim: int = 9, hidden_dim: int = 32) -> None:
+    def __init__(
+        self,
+        n_freqs: int = 257,
+        cond_dim: int = 9,
+        hidden_dim: int = 32,
+        min_scale: float = 0.15,
+        max_scale: float = 0.85,
+    ) -> None:
         super().__init__()
         self.n_freqs = int(n_freqs)
         self.cond_dim = int(cond_dim)
+        if not 0.0 <= min_scale < max_scale <= 1.0:
+            raise ValueError('Invalid dynamic scale range.')
+        self.min_scale = float(min_scale)
+        self.max_scale = float(max_scale)
         self.cond_embed = nn.Sequential(
             nn.Linear(cond_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -38,8 +51,31 @@ class AdaptiveResidualModule(nn.Module):
             nn.Linear(hidden_dim // 2, 2),
             nn.Sigmoid(),
         )
+        self.scale_head = nn.Sequential(
+            nn.Linear(cond_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.PReLU(),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.PReLU(),
+            nn.Linear(hidden_dim // 2, 1),
+        )
+        self._initialize_scale_head(initial_scale=0.65)
 
-    def forward(self, enhanced_spec: torch.Tensor, degradation_conds: torch.Tensor) -> dict[str, torch.Tensor]:
+    def _initialize_scale_head(self, initial_scale: float) -> None:
+        initial_scale = min(max(initial_scale, self.min_scale + 1e-4), self.max_scale - 1e-4)
+        normalized = (initial_scale - self.min_scale) / (self.max_scale - self.min_scale)
+        initial_logit = math.log(normalized / (1.0 - normalized))
+        last_layer = self.scale_head[-1]
+        nn.init.zeros_(last_layer.weight)
+        nn.init.constant_(last_layer.bias, initial_logit)
+
+
+    def forward_v1_impl(
+        self,
+        enhanced_spec: torch.Tensor,
+        degradation_conds: torch.Tensor,
+        force_scale: float | None = None,
+    ) -> dict[str, torch.Tensor]:
         if enhanced_spec.ndim != 4:
             raise ValueError("enhanced_spec must be shaped (B,2,T,F).")
         bsz, channels, frames, n_freqs = enhanced_spec.shape
@@ -59,19 +95,37 @@ class AdaptiveResidualModule(nn.Module):
         x = self.freq_conv2(x)
         candidate = x.reshape(bsz, frames, channels, n_freqs).permute(0, 2, 1, 3).contiguous()
         alpha = self.cond_gate(cond).unsqueeze(-1).unsqueeze(-1)
-        residual = alpha * candidate
+        raw_residual = alpha * candidate
+
+        if force_scale is None:
+            scale_logit = self.scale_head(degradation_conds)
+            dynamic_scale = self.min_scale + (self.max_scale - self.min_scale) * torch.sigmoid(scale_logit)
+        else:
+            if not self.min_scale <= force_scale <= self.max_scale:
+                raise ValueError(
+                    f"force_scale must be in [{self.min_scale}, {self.max_scale}], got {force_scale}"
+                )
+            dynamic_scale = enhanced_spec.new_full((bsz, 1), float(force_scale))
+
+        scale_4d = dynamic_scale[:, :, None, None]
+        residual = scale_4d * raw_residual
         enhanced_final = enhanced_spec + residual
         residual_ratio = torch.linalg.vector_norm(residual.flatten(1), dim=1) / (
             torch.linalg.vector_norm(enhanced_spec.flatten(1), dim=1) + 1e-8
         )
         return {
             "enhanced_final": enhanced_final,
+            "raw_residual": raw_residual,
             "residual": residual,
+            "dynamic_scale": dynamic_scale,
             "alpha": alpha.squeeze(-1).squeeze(-1),
             "raw_alpha": alpha.squeeze(-1).squeeze(-1),
             "global_alpha": torch.ones(bsz, 1, device=enhanced_spec.device),
             "residual_ratio": residual_ratio,
         }
+
+    def forward(self, enhanced_spec: torch.Tensor, degradation_conds: torch.Tensor) -> dict[str, torch.Tensor]:
+        return self.forward_v1_impl(enhanced_spec, degradation_conds)
 
     def count_trainable_params(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
